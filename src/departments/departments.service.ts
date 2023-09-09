@@ -1,26 +1,82 @@
-import { Injectable } from '@nestjs/common';
-import { CreateDepartmentDto } from './dto/create-department.dto';
-import { UpdateDepartmentDto } from './dto/update-department.dto';
+import { DataSource, Repository } from 'typeorm';
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+
+import { CreateDepartmentDto, UpdateDepartmentDto } from './dto';
+import { Department } from './entities/department.entity';
 
 @Injectable()
 export class DepartmentsService {
-  create(createDepartmentDto: CreateDepartmentDto) {
-    return 'This action adds a new department';
+  private readonly logger = new Logger('DepartmentsService');
+
+  constructor(
+    @InjectRepository(Department)
+    private readonly departmentRepository: Repository<Department>,
+
+    private readonly dataSource: DataSource,
+  ) {}
+
+  async create(dto: CreateDepartmentDto) {
+    const department = this.departmentRepository.create(dto);
+    await this.departmentRepository.save(department);
+    return department;
   }
 
   findAll() {
-    return `This action returns all departments`;
+    return this.departmentRepository.find();
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} department`;
+  findOne(id: string) {
+    try {
+      const department = this.departmentRepository.findOneBy({ id });
+      if (!department)
+        throw new NotFoundException(`Department with ${id} not found!`);
+
+      return department;
+    } catch (error) {
+      this.handleExceptions(error);
+    }
   }
 
-  update(id: number, updateDepartmentDto: UpdateDepartmentDto) {
-    return `This action updates a #${id} department`;
+  async update(id: string, dto: UpdateDepartmentDto) {
+    const department = await this.departmentRepository.preload({ id, ...dto });
+
+    if (!department)
+      throw new NotFoundException(`Department with ${id} not found!`);
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      await queryRunner.manager.save(department);
+      await queryRunner.commitTransaction();
+      await queryRunner.release();
+      return this.findOne(id);
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      await queryRunner.release();
+      this.handleExceptions(error);
+    }
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} department`;
+  async remove(id: string) {
+    const department = await this.findOne(id);
+    await this.departmentRepository.remove(department);
+  }
+
+  private handleExceptions(error: any) {
+    if (error.code === '23505') {
+      throw new BadRequestException(error.detail);
+    }
+
+    this.logger.error(error);
+    throw new InternalServerErrorException('Error. Check server logs');
   }
 }
